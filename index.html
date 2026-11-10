@@ -23,6 +23,8 @@ input{flex:1;min-width:120px}
 button.b{background:var(--p2);color:var(--ice2)}
 .card{background:linear-gradient(160deg,var(--p2),var(--p));border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;justify-content:space-between;gap:10px;align-items:center}
 .card b{color:var(--ice2)}
+.fc{max-height:140px;transition:transform .45s ease,opacity .45s ease,max-height .45s ease,padding .45s ease,margin .45s ease}
+.fc.out{transform:translateY(-36px);opacity:0;max-height:0;padding-top:0;padding-bottom:0;margin-bottom:0;overflow:hidden}
 .m{color:var(--mu);font-size:12px}
 .tag{display:inline-block;border:1px solid var(--ice);color:var(--ice);border-radius:99px;padding:0 8px;font-size:11px;margin-right:4px}
 .tag.sp{border-color:#ffd27f;color:#ffd27f}
@@ -34,7 +36,7 @@ button.b{background:var(--p2);color:var(--ice2)}
 a{color:var(--ice)}
 </style></head><body>
 <main>
-<h1>Icebind Companion</h1>
+<h1>Icebind Companion <small style="font:12px sans-serif;color:var(--mu)">v4</small></h1>
 <div class="sub" id="status">Starting…</div>
 <div class="prog"><i id="pb"></i></div>
 <div id="view"></div>
@@ -95,10 +97,19 @@ function fissView(){
   <div class="bar"><button class="b" onclick="addRule()">🔔 Alert me for this filter</button></div>
   ${rules.map((r,i)=>`<div class="card"><span>🔔 ${r.s=="sp"?"Steel Path ":r.s=="normal"?"Normal ":""}${r.m||"any mission"} ${r.tier?"· "+r.tier:""}</span><button class="b" onclick="delRule(${i})">✕</button></div>`).join("")}
   ${rules.length?`<div class="note">Alerts fire while this page is open (checked every minute).</div>`:""}
-  ${list.map(f=>`<div class="card"><div><b>${f.missionType}</b> <span class="tag">${f.tier}</span>${f.isHardMode?'<span class="tag sp">Steel Path</span>':""}<div class="m">${f.node}${f.enemy?" · "+f.enemy:""}</div></div><div class="r m" data-exp="${f.expiry}"></div></div>`).join("")||'<div class="note">No fissures match.</div>'}`;
+  ${list.map(f=>`<div class="card fc"><div><b>${f.missionType}</b> <span class="tag">${f.tier}</span>${f.isHardMode?'<span class="tag sp">Steel Path</span>':""}<div class="m">${f.node}${f.enemy?" · "+f.enemy:""}</div></div><div class="r m" data-exp="${f.expiry}">${cd(f.expiry)}</div></div>`).join("")||'<div class="note">No fissures match.</div>'}`;
 }
-setInterval(()=>document.querySelectorAll("[data-exp]").forEach(e=>{
-  let s=Math.max(0,(new Date(e.dataset.exp)-Date.now())/1000|0);if(s==0&&!e.dataset.done){e.dataset.done=1;setTimeout(()=>{if(tab=="fiss")render()},50)}e.textContent=`${s/3600|0}h ${(s%3600)/60|0}m ${s%60}s`}),1000);
+const cd=x=>{const s=Math.max(0,(new Date(x)-Date.now())/1000|0);return `${s/3600|0}h ${(s%3600)/60|0}m ${s%60}s`};
+function tick(){
+  document.querySelectorAll("[data-exp]").forEach(e=>{
+    e.textContent=cd(e.dataset.exp);
+    if(new Date(e.dataset.exp)<=Date.now()&&!e.dataset.done){
+      e.dataset.done=1;const c=e.closest(".card");if(c)c.classList.add("out");
+      setTimeout(()=>{if(tab=="fiss")render()},500);
+    }
+  });
+}
+setInterval(tick,1000);
 
 /* ---------- market data ---------- */
 const tp=tags=>{tags=tags||[];return tags.includes("arcane_enhancement")?"Arcane":tags.includes("mod")?"Mod":tags.includes("warframe")?"Warframe":tags.includes("weapon")?"Weapon":tags.includes("relic")?"Relic":tags.includes("sentinel")||tags.includes("pet")?"Companion":"Other"};
@@ -107,7 +118,7 @@ async function loadItems(){
     const rs=await fetch("https://api.warframe.market/v2/items");
     if(!rs.ok)throw new Error("HTTP "+rs.status);
     const j=await rs.json();
-    (j.data||[]).forEach(i=>{items[i.slug]={slug:i.slug,name:i.i18n?.en?.name||i.slug,type:tp(i.tags),ducats:i.ducats||0}});
+    (j.data||[]).forEach(i=>{items[i.slug]={slug:i.slug,name:i.i18n?.en?.name||i.slug,type:tp(i.tags),ducats:i.ducats||0};if((i.tags||[]).includes("relic")&&i.vaulted!=null)vault[(i.i18n?.en?.name||"").replace(/ Relic$/i,"").toLowerCase()]=!!i.vaulted});
     mErr="";
   }catch(e){mErr="Could not load the item list from warframe.market ("+e.message+")."}
   startQueue();
@@ -218,10 +229,10 @@ function relicView(){
 /* ---------- rivens ---------- */
 async function loadRivens(){
   try{
-    const rs=await fetch("https://api.warframe.market/v1/riven/items");
+    const rs=await fetch("https://api.warframe.market/v2/riven/weapons");
     if(!rs.ok)throw new Error("HTTP "+rs.status);
     const j=await rs.json();
-    j.payload.items.forEach(i=>{rivItems[i.url_name]={slug:i.url_name,name:i.item_name,type:i.riven_type||"other"}});
+    (j.data||[]).forEach(i=>{rivItems[i.slug]={slug:i.slug,name:i.i18n?.en?.name||i.slug,type:i.rivenType||"other"}});
     rvErr="";
   }catch(e){rvErr="Could not load the riven weapon list from warframe.market ("+e.message+")."}
   if(tab=="riv")render();
@@ -284,6 +295,7 @@ function render(){
   const y=scrollY;
   $("#view").innerHTML=tab=="fiss"?fissView():tab=="mkt"?marketView():tab=="mov"?moversView():tab=="rel"?relicView():tab=="riv"?rivenView():tab=="ora"?oracleView():ducatView();
   if(document.activeElement===document.body)scrollTo(0,y);
+  tick();
 }
 nav();render();
 loadFiss();setInterval(loadFiss,60000);
