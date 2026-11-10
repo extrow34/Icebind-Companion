@@ -36,9 +36,10 @@ button.b{background:var(--p2);color:var(--ice2)}
 a{color:var(--ice)}
 </style></head><body>
 <main>
-<h1>Icebind Companion <small style="font:12px sans-serif;color:var(--mu)">v4</small></h1>
+<h1>Icebind Companion <small style="font:12px sans-serif;color:var(--mu)">v5</small></h1>
 <div class="sub" id="status">Starting…</div>
 <div class="prog"><i id="pb"></i></div>
+<div id="warn"></div>
 <div id="view"></div>
 </main>
 <nav id="nav"></nav>
@@ -115,52 +116,64 @@ setInterval(tick,1000);
 const tp=tags=>{tags=tags||[];return tags.includes("arcane_enhancement")?"Arcane":tags.includes("mod")?"Mod":tags.includes("warframe")?"Warframe":tags.includes("weapon")?"Weapon":tags.includes("relic")?"Relic":tags.includes("sentinel")||tags.includes("pet")?"Companion":"Other"};
 async function loadItems(){
   try{
-    const rs=await fetch("https://api.warframe.market/v2/items");
-    if(!rs.ok)throw new Error("HTTP "+rs.status);
-    const j=await rs.json();
-    (j.data||[]).forEach(i=>{items[i.slug]={slug:i.slug,name:i.i18n?.en?.name||i.slug,type:tp(i.tags),ducats:i.ducats||0};if((i.tags||[]).includes("relic")&&i.vaulted!=null)vault[(i.i18n?.en?.name||"").replace(/ Relic$/i,"").toLowerCase()]=!!i.vaulted});
+    let list=null,ver=null;
+    try{const v=await (await fetch("https://api.warframe.market/v2/versions")).json();ver=v.data?.collections?.items||null}catch(e){}
+    const saved=LS("il");
+    if(saved&&ver&&saved.v==ver)list=saved.d; /* item list unchanged: skip the big download */
+    if(!list){
+      const rs=await fetch("https://api.warframe.market/v2/items");
+      if(!rs.ok)throw new Error("HTTP "+rs.status);
+      list=((await rs.json()).data||[]).filter(i=>i.tradable!==false).map(i=>({s:i.slug,n:i.i18n?.en?.name||i.slug,t:tp(i.tags),d:i.ducats||0,v:i.vaulted==null?null:!!i.vaulted,r:(i.tags||[]).includes("relic")}));
+      if(ver)LS("il",{v:ver,d:list});
+    }
+    list.forEach(i=>{items[i.s]={slug:i.s,name:i.n,type:i.t,ducats:i.d,vaulted:i.v};if(i.r&&i.v!=null)vault[i.n.replace(/ Relic$/i,"").toLowerCase()]=i.v});
     mErr="";
   }catch(e){mErr="Could not load the item list from warframe.market ("+e.message+")."}
   startQueue();
 }
 const stale=s=>{const c=cache[s];return !c||Date.now()-c.t>20*60*1000};
 let prio=new Set(),running=false;
+async function topOrders(s){
+  const u=`https://api.warframe.market/v2/orders/item/${s}/top`;
+  try{return await fetch(u,{headers:{Platform:"pc"}})}catch(e){return await fetch(u)}
+}
 async function startQueue(){
   if(running)return;running=true;
   const order=()=>Object.keys(items).filter(stale).sort((a,b)=>(prio.has(b)-prio.has(a))||(items[b].ducats>0)-(items[a].ducats>0));
-  let q=order(),total=q.length,n=0;
+  let q=order(),total=q.length,n=0,fails=0,last="";
   while(q.length){
+    if(fails>=8){mErr="Prices unavailable ("+last+"). Check your connection or try again in a few minutes.";break}
     const s=q.shift();
     try{
       await gate();
-      const r=await fetch(`https://api.warframe.market/v1/items/${s}/statistics`);
+      const r=await topOrders(s);
       if(r.status==429){q.unshift(s);await new Promise(r=>setTimeout(r,3000));continue}
-      if(r.ok){const p=(await r.json()).payload.statistics_closed;cache[s]=calc(p)}
-      else cache[s]={t:Date.now()};
-    }catch(e){}
+      if(r.ok){cache[s]=calc(cache[s],await r.json());fails=0}
+      else{fails++;last="HTTP "+r.status;cache[s]={...(cache[s]||{}),t:Date.now()}}
+    }catch(e){fails++;last=e.message}
     n++;
     if(n%25==0){LS("px",cache);$("#status").textContent=`Updating prices ${n}/${total}`;$("#pb").style.width=(n/total*100)+"%";if(["mkt","mov","rel","duc","ora"].includes(tab))render();q=order()}
   }
   LS("px",cache);running=false;$("#pb").style.width="0";
-  $("#status").textContent="Prices updated "+new Date().toLocaleTimeString();render();
+  $("#status").textContent=fails>=8?"Price lookup failed":"Prices updated "+new Date().toLocaleTimeString();render();
 }
-function calc(p){
-  const h=p["48hours"]||[],d=p["90days"]||[];
-  const last=h.length?h[h.length-1]:d[d.length-1];
-  if(!last)return{t:Date.now()};
-  const base=d.slice(0,-2).map(x=>x.median),b=base.length?base.reduce((a,c)=>a+c,0)/base.length:null;
-  const pr=h.length?h.slice(-6).reduce((a,x)=>a+x.median,0)/Math.min(6,h.length):last.median;
-  const vol=h.reduce((a,x)=>a+x.volume,0),bv=d.slice(0,-2).map(x=>x.volume),bvol=bv.length?bv.reduce((a,c)=>a+c,0)/bv.length*2:null;
-  return{t:Date.now(),p:pr,b,v:vol,bv:bvol,c:b?(pr-b)/b:null};
+/* price = cheapest sell order from an online player; change = vs. this app's own earlier readings */
+function calc(old,j){
+  const pl=a=>(a||[]).map(o=>o.platinum).filter(x=>x>0);
+  const sell=pl(j.data?.sell),buy=pl(j.data?.buy);
+  const p=sell.length?Math.min(...sell):null,b=buy.length?Math.max(...buy):null;
+  const now=Date.now()/6e4|0;
+  let h=(old&&old.h)||[];
+  if(p!=null&&(!h.length||now-h[h.length-1][0]>=15))h=h.concat([[now,p]]).slice(-30);
+  const o3=h.filter(e=>now-e[0]>180).map(e=>e[1]);
+  const base=o3.length?o3.reduce((a,c)=>a+c,0)/o3.length:null;
+  return{t:Date.now(),p,b,n:sell.length,h,base,c:base&&p!=null?(p-base)/base:null};
 }
-function reason(c,x){
-  const up=x.c>0,vh=x.bv&&x.v>x.bv*1.5,vl=x.bv&&x.v<x.bv*.6;
-  if(up&&vh)return"Demand spike with heavy trading: likely a new meta, event, or content drop pulling buyers in.";
-  if(up&&vl)return"Price rising on thin volume: supply drying up, possibly vaulting or sellers holding out.";
-  if(up)return"Steady climb: sellers are raising asks, often after a Prime Access/Resurgence ends.";
-  if(vh)return"Sell-off on high volume: new supply, e.g. unvaulting, Baro/Resurgence, or a drop-rate change.";
-  if(vl)return"Dropping on low volume: few buyers; could be a temporary dip or a stale lowball listing.";
-  return"Gradual decline: supply is outpacing demand.";
+function reason(x){
+  if(x.c>0&&x.n<=2)return"Few sellers left: supply is drying up, possibly vaulting or a hot new build.";
+  if(x.c>0)return"Sellers are raising their asks: demand outpaced supply, often after new content or when a Prime Access/Resurgence ends.";
+  if(x.n>=5)return"Lots of sellers undercutting each other: new supply, such as unvaulting, Baro/Resurgence, or a drop change.";
+  return"Prices are sliding: demand dropped, for example after a nerf or once players finished farming it.";
 }
 /* ---------- market views ---------- */
 function rows(arr,max=200){return arr.slice(0,max)}
@@ -170,6 +183,7 @@ function marketView(){
   const pr=i=>cache[i.slug]?.p;
   l.sort((a,b)=>ml.s=="name"?a.name.localeCompare(b.name):ml.s=="type"?a.type.localeCompare(b.type)||a.name.localeCompare(b.name):ml.s=="price"?(pr(b)??-1)-(pr(a)??-1):Math.abs(cache[b.slug]?.c||0)-Math.abs(cache[a.slug]?.c||0));
   return `${mErr?`<div class="note">${mErr}</div>`:""}
+  <div class="note">Price = cheapest sell order from a player who is online now (PC). The change % shows up once the app has a few hours of its own readings.</div>
   <div class="bar"><input placeholder="Search ${Object.keys(items).length} tradeable items" value="${ml.q}" oninput="ml.q=this.value;clearTimeout(window.st);window.st=setTimeout(render,250)">
   <select onchange="ml.t=this.value;render()"><option value="">All types</option>${types.map(t=>`<option ${ml.t==t?"selected":""}>${t}</option>`).join("")}</select>
   <select onchange="ml.s=this.value;render()">${[["name","Name"],["type","Type"],["price","Price"],["chg","Biggest change"]].map(([v,n])=>`<option value="${v}" ${ml.s==v?"selected":""}>Sort: ${n}</option>`).join("")}</select></div>
@@ -177,9 +191,9 @@ function marketView(){
   ${l.length>200?`<div class="note">Showing 200 of ${l.length}. Search to narrow down.</div>`:""}`;
 }
 function moversView(){
-  const l=Object.values(items).map(i=>({i,x:cache[i.slug]})).filter(o=>o.x&&o.x.c!=null&&Math.abs(o.x.c)>=.15&&o.x.p>=3&&o.x.v>=3).sort((a,b)=>Math.abs(b.x.c)-Math.abs(a.x.c));
-  return `<div class="note">Compares the last ~48h median price with the 90-day average. Only items moving 15%+ with some trading volume. The "why" is an educated guess from price and volume, not a fact.</div>
-  ${rows(l,60).map(({i,x})=>`<div class="card" style="display:block"><div style="display:flex;justify-content:space-between"><b>${i.name}</b><span>${pct(x.c)}</span></div><div class="m">${fmt(x.b)}p → ${fmt(x.p)}p (${x.p>x.b?"+":""}${fmt(x.p-x.b)}p) · ${x.v} sold in 48h</div><div class="m" style="margin-top:4px">${reason(x.c,x)}</div></div>`).join("")||'<div class="note">Nothing yet. Prices are still loading.</div>'}`;
+  const l=Object.values(items).map(i=>({i,x:cache[i.slug]})).filter(o=>o.x&&o.x.c!=null&&Math.abs(o.x.c)>=.15&&o.x.p>=3).sort((a,b)=>Math.abs(b.x.c)-Math.abs(a.x.c));
+  return `<div class="note">Compares the cheapest sell price now with the average of this app's own readings from 3+ hours ago, so it needs a few hours of history (open the app now and then). Only items moving 15%+. The "why" is an educated guess, not a fact.</div>
+  ${rows(l,60).map(({i,x})=>`<div class="card" style="display:block"><div style="display:flex;justify-content:space-between"><b>${i.name}</b><span>${pct(x.c)}</span></div><div class="m">${fmt(x.base)}p → ${fmt(x.p)}p (${x.p>x.base?"+":""}${fmt(x.p-x.base)}p) · ${x.n} sellers online</div><div class="m" style="margin-top:4px">${reason(x)}</div></div>`).join("")||'<div class="note">Nothing yet. Price history builds up while the app is open.</div>'}`;
 }
 function ducatView(){
   let l=Object.values(items).filter(i=>i.ducats>0&&cache[i.slug]?.p>0&&i.name.toLowerCase().includes(dl.q.toLowerCase())).map(i=>({i,p:cache[i.slug].p,d:i.ducats/cache[i.slug].p}));
@@ -211,7 +225,7 @@ function relicEV(r,ref){
   return{ev,known,n};
 }
 function relicView(){
-  const vk=r=>vault[(r.tier+" "+r.relicName).toLowerCase()];
+  const vk=r=>{const k=vault[(r.tier+" "+r.relicName).toLowerCase()];if(k!=null)return k;const vs=r.rewards.map(x=>items[SLUG(x.itemName)]?.vaulted).filter(v=>v!=null);return vs.length?vs.every(Boolean):undefined};
   let l=relics.map(r=>({r,...relicEV(r,rl.ref),v:vk(r)})).filter(o=>(!rl.tier||o.r.tier==rl.tier)&&(!rl.v||(rl.v=="v"?o.v===true:o.v===false))&&(o.r.tier+" "+o.r.relicName).toLowerCase().includes(rl.q.toLowerCase()));
   l.sort((a,b)=>rl.sort=="roi"?b.ev-a.ev:(a.r.tier+a.r.relicName).localeCompare(b.r.tier+b.r.relicName));
   const o=(k,arr,all)=>`<select onchange="rl.${k}=this.value;render()"><option value="">${all}</option>${arr.map(([v,n])=>`<option value="${v}" ${rl[k]==v?"selected":""}>${n}</option>`).join("")}</select>`;
@@ -241,8 +255,9 @@ async function loadRivens(){
 async function rivQueue(){
   if(rivRun)return;rivRun=true;
   const q=Object.keys(rivItems).filter(s=>!rv[s]||Date.now()-rv[s].t>20*60*1000);
-  let n=0;
+  let n=0,fails=0,last="";
   while(q.length){
+    if(fails>=5){rvErr="Riven prices unavailable ("+last+"). The public v2 API has no Riven auction listing yet, so this uses the deprecated v1 one.";break}
     const s=q.shift();
     try{
       await gate();
@@ -251,9 +266,9 @@ async function rivQueue(){
       if(r.ok){
         const a=(await r.json()).payload.auctions.filter(x=>!x.closed&&x.visible!==false&&x.buyout_price>0);
         const p=a.map(x=>x.buyout_price).sort((x,y)=>x-y), c=p.slice(0,5);
-        rv[s]={t:Date.now(),n:p.length,lo:p.length?p[0]:null,med:c.length?c[(c.length-1)>>1]:null};
-      }else rv[s]={t:Date.now()};
-    }catch(e){}
+        rv[s]={t:Date.now(),n:p.length,lo:p.length?p[0]:null,med:c.length?c[(c.length-1)>>1]:null};fails=0;rvErr="";
+      }else{rv[s]={t:Date.now()};fails++;last="HTTP "+r.status}
+    }catch(e){fails++;last=e.message}
     if(++n%15==0){LS("rv",rv);if(tab=="riv")render()}
   }
   LS("rv",rv);rivRun=false;if(tab=="riv")render();
@@ -277,22 +292,22 @@ const DN=["Everyone is farming it at once.","A Kubrow sat on the market.","Playe
 function oracleView(){
   const day=new Date().toDateString();
   const h=s=>{let x=0;for(const ch of s+day)x=(x*31+ch.charCodeAt(0))>>>0;return x};
-  const L=Object.values(items).map(i=>({i,x:cache[i.slug]})).filter(o=>o.x&&o.x.c!=null&&o.x.p>=3&&o.x.v>=3).map(o=>{
-    const vr=o.x.bv?o.x.v/o.x.bv:1;
-    let pred=vr>=1.2?o.x.c*.6:-o.x.c*.5; /* strong volume = trend continues, weak volume = snaps back */
-    pred+=((h(o.i.name)%9)-4)/100; pred=Math.max(-.4,Math.min(.4,pred));
-    return{...o,pred,conf:Math.min(95,Math.round(35+Math.abs(pred)*120+(o.x.v>20?10:0)))};
+  const L=Object.values(items).map(i=>({i,x:cache[i.slug]})).filter(o=>o.x&&o.x.p>=5).map(o=>{
+    const hh=o.x.h||[],sl=hh.length>=2?hh[hh.length-1][1]-hh[hh.length-2][1]:0,vibes=o.x.c==null;
+    let pred=vibes?((h(o.i.name)%41)-20)/100:(Math.sign(sl)==Math.sign(o.x.c)?o.x.c*.6:-o.x.c*.5);
+    pred+=((h(o.i.name)%9)-4)/100;pred=Math.max(-.4,Math.min(.4,pred));
+    return{...o,pred,vibes,conf:vibes?Math.min(30,Math.round(10+Math.abs(pred)*60)):Math.min(95,Math.round(35+Math.abs(pred)*120+(o.x.n>=5?10:0)))};
   });
   const card=o=>{const msg=(o.pred>0?UP:DN)[h(o.i.name+"m")%5];
-    return `<div class="card" style="display:block"><div style="display:flex;justify-content:space-between"><b>${o.i.name}</b><span class="${o.pred>0?"up":"dn"}">${o.pred>0?"▲ +":"▼ "}${Math.round(o.pred*100)}%</span></div><div class="m">Now ${fmt(o.x.p)}p · Lotus confidence ${o.conf}%</div><div class="m" style="margin-top:3px">${msg}</div></div>`};
+    return `<div class="card" style="display:block"><div style="display:flex;justify-content:space-between"><b>${o.i.name}</b><span class="${o.pred>0?"up":"dn"}">${o.pred>0?"▲ +":"▼ "}${Math.round(o.pred*100)}%</span></div><div class="m">Now ${fmt(o.x.p)}p · Lotus confidence ${o.conf}%${o.vibes?" · vibes only":""}</div><div class="m" style="margin-top:3px">${msg}</div></div>`};
   const up=L.filter(o=>o.pred>0).sort((a,b)=>b.pred-a.pred).slice(0,8),dn=L.filter(o=>o.pred<0).sort((a,b)=>a.pred-b.pred).slice(0,8);
-  return `<div class="note">For fun only, not trading advice. The guess combines each item's 48h price against its 90-day average and its trading volume: busy trading means the trend keeps going, quiet trading means it snaps back. The jokes are made up. Picks reshuffle a little each day.</div>
+  return `<div class="note">For fun only, not trading advice. With a few hours of price history the guess follows the trend. Until then, items marked "vibes only" are pure guesswork. The jokes are made up. Picks reshuffle a little each day.</div>
   <h1 style="font-size:17px;margin:6px 0">Going up</h1>${up.map(card).join("")||'<div class="note">Waiting for prices…</div>'}
   <h1 style="font-size:17px;margin:12px 0 6px">Going down</h1>${dn.map(card).join("")||'<div class="note">Waiting for prices…</div>'}`;
 }
 /* ---------- render ---------- */
 function render(){
-  const y=scrollY;
+  const y=scrollY;$("#warn").innerHTML=mErr&&tab!="mkt"?`<div class="note">${mErr}</div>`:"";
   $("#view").innerHTML=tab=="fiss"?fissView():tab=="mkt"?marketView():tab=="mov"?moversView():tab=="rel"?relicView():tab=="riv"?rivenView():tab=="ora"?oracleView():ducatView();
   if(document.activeElement===document.body)scrollTo(0,y);
   tick();
