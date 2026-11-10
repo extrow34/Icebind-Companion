@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#08131d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Icebind Companion</title>
+<style>
+:root{--bg:#08131d;--p:#0f2230;--p2:#153044;--line:#25506b;--tx:#e6f4fb;--mu:#8fb3c7;--ice:#7fd8ff;--ice2:#b9ecff;--up:#6ff0c0;--dn:#ff8fa3}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:radial-gradient(120% 60% at 50% -10%,#16405a 0%,var(--bg) 60%);color:var(--tx);font:15px/1.4 "Trebuchet MS",Verdana,sans-serif;padding-top:env(safe-area-inset-top)}
+main{max-width:900px;margin:auto;padding:14px 12px calc(84px + env(safe-area-inset-bottom))}
+h1{font:600 22px Georgia,serif;letter-spacing:.5px;color:var(--ice2);margin-bottom:2px}
+.sub{color:var(--mu);font-size:12px;margin-bottom:12px}
+nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:#0a1a27ee;backdrop-filter:blur(8px);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom);z-index:5}
+nav button{flex:1;min-width:0;background:none;border:0;color:var(--mu);padding:11px 1px;font:inherit;font-size:11px}
+nav button.on{color:var(--ice2);box-shadow:inset 0 2px 0 var(--ice)}
+.bar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+select,input,button.b{background:var(--p);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:9px 10px;font:inherit;min-width:0}
+input{flex:1;min-width:120px}
+button.b{background:var(--p2);color:var(--ice2)}
+.card{background:linear-gradient(160deg,var(--p2),var(--p));border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;justify-content:space-between;gap:10px;align-items:center}
+.card b{color:var(--ice2)}
+.m{color:var(--mu);font-size:12px}
+.tag{display:inline-block;border:1px solid var(--ice);color:var(--ice);border-radius:99px;padding:0 8px;font-size:11px;margin-right:4px}
+.tag.sp{border-color:#ffd27f;color:#ffd27f}
+.r{text-align:right;white-space:nowrap}
+.up{color:var(--up)}.dn{color:var(--dn)}
+.note{background:#0c2a3a;border:1px dashed var(--line);border-radius:10px;padding:8px 10px;color:var(--mu);font-size:12px;margin-bottom:10px}
+.prog{height:3px;background:var(--p);border-radius:2px;margin-bottom:10px;overflow:hidden}
+.prog i{display:block;height:100%;background:linear-gradient(90deg,var(--ice),var(--ice2));width:0}
+a{color:var(--ice)}
+</style></head><body>
+<main>
+<h1>Icebind Companion</h1>
+<div class="sub" id="status">Starting…</div>
+<div class="prog"><i id="pb"></i></div>
+<div id="view"></div>
+</main>
+<nav id="nav"></nav>
+<script>
+const $=s=>document.querySelector(s);
+const LS=(k,v)=>{try{if(v===undefined)return JSON.parse(localStorage.getItem(k));localStorage.setItem(k,JSON.stringify(v))}catch(e){return null}};
+const TABS=[["fiss","Fissures"],["mkt","Market"],["mov","Movers"],["rel","Relics"],["duc","Ducats"],["riv","Rivens"],["ora","Oracle"]];
+let tab=location.hash.slice(1)||"fiss";
+let F=[],fErr="",fl={t:"",m:"",s:"",tier:""},rules=LS("rules")||[],seen=new Set(),first=true;
+let items={},cache=LS("px")||{},relics=[],relErr="",vault={},rl={tier:"",v:"",ref:"Radiant",q:"",sort:"roi"},ml={q:"",t:"",s:"name"},dl={q:"",s:"dpp"},mErr="";
+let rv=LS("rv")||{},rivItems={},vl={q:"",t:"",s:"name"},rivRun=false,rvErr="";
+let chain=Promise.resolve();
+const gate=()=>{chain=chain.then(()=>new Promise(r=>setTimeout(r,340)));return chain}; /* one shared ≈3 req/sec limiter */
+const SLUG=n=>n.toLowerCase().replace(/&/g,"and").replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"");
+const fmt=n=>n==null?"–":(Math.round(n*10)/10).toString();
+const pct=c=>c==null?"–":`<span class="${c>=0?"up":"dn"}">${c>=0?"+":""}${Math.round(c*100)}%</span>`;
+
+/* ---------- navigation ---------- */
+function nav(){ $("#nav").innerHTML=TABS.map(([k,n])=>`<button class="${k==tab?"on":""}" onclick="go('${k}')">${n}</button>`).join("") }
+function go(k){tab=k;location.hash=k;nav();render()}
+
+/* ---------- fissures ---------- */
+async function loadFiss(){
+  try{
+    const r=await fetch("https://api.warframestat.us/pc/fissures?language=en");
+    F=(await r.json()).filter(f=>!f.expired&&!f.isStorm); fErr="";
+    checkRules();
+  }catch(e){fErr="Could not reach the fissure API. Check your connection."}
+  if(tab=="fiss")render();
+}
+const fid=f=>f.id||[f.node,f.tier,f.missionType,f.expiry].join("|");
+const match=(f,r)=>(!r.m||f.missionType==r.m)&&(!r.tier||f.tier==r.tier)&&(!r.s||(r.s=="sp")==!!f.isHardMode);
+function checkRules(){
+  F.forEach(f=>{const id=fid(f);
+    if(!seen.has(id)){seen.add(id);
+      if(!first)rules.filter(r=>match(f,r)).forEach(()=>notify(`${f.isHardMode?"Steel Path ":""}${f.missionType} (${f.tier})`,`${f.node} · ${f.eta||""}`));}});
+  first=false;
+}
+function notify(t,b){
+  try{if("Notification"in window&&Notification.permission=="granted")new Notification(t,{body:b})}catch(e){}
+  const d=document.createElement("div");d.className="card";d.style.cssText="position:fixed;top:calc(10px + env(safe-area-inset-top));left:10px;right:10px;z-index:9";
+  d.innerHTML=`<div><b>${t}</b><div class="m">${b}</div></div>`;document.body.append(d);setTimeout(()=>d.remove(),8000);
+}
+async function addRule(){
+  if("Notification"in window&&Notification.permission=="default")await Notification.requestPermission();
+  if(!fl.m&&!fl.tier&&!fl.s){alert("Pick a mission type, relic tier or Steel Path filter first.");return}
+  rules.push({m:fl.m,tier:fl.tier,s:fl.s});LS("rules",rules);render();
+}
+function delRule(i){rules.splice(i,1);LS("rules",rules);render()}
+function fissView(){
+  const types=[...new Set(F.map(f=>f.missionType))].sort(), tiers=["Lith","Meso","Neo","Axi","Requiem","Omnia"].filter(t=>F.some(f=>f.tier==t));
+  const list=F.filter(f=>match(f,fl)).sort((a,b)=>new Date(a.expiry)-new Date(b.expiry));
+  const sel=(k,arr,all)=>`<select onchange="fl.${k}=this.value;render()"><option value="">${all}</option>${arr.map(([v,n])=>`<option value="${v}" ${fl[k]==v?"selected":""}>${n}</option>`).join("")}</select>`;
+  return `${fErr?`<div class="note">${fErr}</div>`:""}
+  <div class="bar">${sel("m",types.map(t=>[t,t]),"All missions")}${sel("s",[["normal","Normal"],["sp","Steel Path"]],"Normal + Steel Path")}${sel("tier",tiers.map(t=>[t,t]),"All relic tiers")}</div>
+  <div class="bar"><button class="b" onclick="addRule()">🔔 Alert me for this filter</button></div>
+  ${rules.map((r,i)=>`<div class="card"><span>🔔 ${r.s=="sp"?"Steel Path ":r.s=="normal"?"Normal ":""}${r.m||"any mission"} ${r.tier?"· "+r.tier:""}</span><button class="b" onclick="delRule(${i})">✕</button></div>`).join("")}
+  ${rules.length?`<div class="note">Alerts fire while this page is open (checked every minute).</div>`:""}
+  ${list.map(f=>`<div class="card"><div><b>${f.missionType}</b> <span class="tag">${f.tier}</span>${f.isHardMode?'<span class="tag sp">Steel Path</span>':""}<div class="m">${f.node}${f.enemy?" · "+f.enemy:""}</div></div><div class="r m" data-exp="${f.expiry}"></div></div>`).join("")||'<div class="note">No fissures match.</div>'}`;
+}
+setInterval(()=>document.querySelectorAll("[data-exp]").forEach(e=>{
+  let s=Math.max(0,(new Date(e.dataset.exp)-Date.now())/1000|0);e.textContent=`${s/3600|0}h ${(s%3600)/60|0}m ${s%60}s`}),1000);
+
+/* ---------- market data ---------- */
+const tp=tags=>{tags=tags||[];return tags.includes("arcane_enhancement")?"Arcane":tags.includes("mod")?"Mod":tags.includes("warframe")?"Warframe":tags.includes("weapon")?"Weapon":tags.includes("relic")?"Relic":tags.includes("sentinel")||tags.includes("pet")?"Companion":"Other"};
+async function loadItems(){
+  try{
+    const j=await (await fetch("https://api.warframe.market/v2/items",{headers:{Language:"en"}})).json();
+    (j.data||[]).forEach(i=>{items[i.slug]={slug:i.slug,name:i.i18n?.en?.name||i.slug,type:tp(i.tags),ducats:i.ducats||0}});
+    mErr="";
+  }catch(e){mErr="Could not load the item list from warframe.market."}
+  startQueue();
+}
+const stale=s=>{const c=cache[s];return !c||Date.now()-c.t>20*60*1000};
+let prio=new Set(),running=false;
+async function startQueue(){
+  if(running)return;running=true;
+  const order=()=>Object.keys(items).filter(stale).sort((a,b)=>(prio.has(b)-prio.has(a))||(items[b].ducats>0)-(items[a].ducats>0));
+  let q=order(),total=q.length,n=0;
+  while(q.length){
+    const s=q.shift();
+    try{
+      await gate();
+      const r=await fetch(`https://api.warframe.market/v1/items/${s}/statistics`);
+      if(r.status==429){q.unshift(s);await new Promise(r=>setTimeout(r,3000));continue}
+      if(r.ok){const p=(await r.json()).payload.statistics_closed;cache[s]=calc(p)}
+      else cache[s]={t:Date.now()};
+    }catch(e){}
+    n++;
+    if(n%25==0){LS("px",cache);$("#status").textContent=`Updating prices ${n}/${total}`;$("#pb").style.width=(n/total*100)+"%";if(["mkt","mov","rel","duc","ora"].includes(tab))render();q=order()}
+  }
+  LS("px",cache);running=false;$("#pb").style.width="0";
+  $("#status").textContent="Prices updated "+new Date().toLocaleTimeString();render();
+}
+function calc(p){
+  const h=p["48hours"]||[],d=p["90days"]||[];
+  const last=h.length?h[h.length-1]:d[d.length-1];
+  if(!last)return{t:Date.now()};
+  const base=d.slice(0,-2).map(x=>x.median),b=base.length?base.reduce((a,c)=>a+c,0)/base.length:null;
+  const pr=h.length?h.slice(-6).reduce((a,x)=>a+x.median,0)/Math.min(6,h.length):last.median;
+  const vol=h.reduce((a,x)=>a+x.volume,0),bv=d.slice(0,-2).map(x=>x.volume),bvol=bv.length?bv.reduce((a,c)=>a+c,0)/bv.length*2:null;
+  return{t:Date.now(),p:pr,b,v:vol,bv:bvol,c:b?(pr-b)/b:null};
+}
+function reason(c,x){
+  const up=x.c>0,vh=x.bv&&x.v>x.bv*1.5,vl=x.bv&&x.v<x.bv*.6;
+  if(up&&vh)return"Demand spike with heavy trading: likely a new meta, event, or content drop pulling buyers in.";
+  if(up&&vl)return"Price rising on thin volume: supply drying up, possibly vaulting or sellers holding out.";
+  if(up)return"Steady climb: sellers are raising asks, often after a Prime Access/Resurgence ends.";
+  if(vh)return"Sell-off on high volume: new supply, e.g. unvaulting, Baro/Resurgence, or a drop-rate change.";
+  if(vl)return"Dropping on low volume: few buyers; could be a temporary dip or a stale lowball listing.";
+  return"Gradual decline: supply is outpacing demand.";
+}
+/* ---------- market views ---------- */
+function rows(arr,max=200){return arr.slice(0,max)}
+function marketView(){
+  const types=[...new Set(Object.values(items).map(i=>i.type))].sort();
+  let l=Object.values(items).filter(i=>(!ml.t||i.type==ml.t)&&i.name.toLowerCase().includes(ml.q.toLowerCase()));
+  const pr=i=>cache[i.slug]?.p;
+  l.sort((a,b)=>ml.s=="name"?a.name.localeCompare(b.name):ml.s=="type"?a.type.localeCompare(b.type)||a.name.localeCompare(b.name):ml.s=="price"?(pr(b)??-1)-(pr(a)??-1):Math.abs(cache[b.slug]?.c||0)-Math.abs(cache[a.slug]?.c||0));
+  return `${mErr?`<div class="note">${mErr}</div>`:""}
+  <div class="bar"><input placeholder="Search ${Object.keys(items).length} tradeable items" value="${ml.q}" oninput="ml.q=this.value;clearTimeout(window.st);window.st=setTimeout(render,250)">
+  <select onchange="ml.t=this.value;render()"><option value="">All types</option>${types.map(t=>`<option ${ml.t==t?"selected":""}>${t}</option>`).join("")}</select>
+  <select onchange="ml.s=this.value;render()">${[["name","Name"],["type","Type"],["price","Price"],["chg","Biggest change"]].map(([v,n])=>`<option value="${v}" ${ml.s==v?"selected":""}>Sort: ${n}</option>`).join("")}</select></div>
+  ${rows(l).map(i=>{const c=cache[i.slug]||{};return `<div class="card"><div><b>${i.name}</b><div class="m">${i.type}${i.ducats?" · "+i.ducats+" ducats":""}</div></div><div class="r">${c.p!=null?fmt(c.p)+"p":"…"}<div class="m">${pct(c.c)}</div></div></div>`}).join("")}
+  ${l.length>200?`<div class="note">Showing 200 of ${l.length}. Search to narrow down.</div>`:""}`;
+}
+function moversView(){
+  const l=Object.values(items).map(i=>({i,x:cache[i.slug]})).filter(o=>o.x&&o.x.c!=null&&Math.abs(o.x.c)>=.15&&o.x.p>=3&&o.x.v>=3).sort((a,b)=>Math.abs(b.x.c)-Math.abs(a.x.c));
+  return `<div class="note">Compares the last ~48h median price with the 90-day average. Only items moving 15%+ with some trading volume. The "why" is an educated guess from price and volume, not a fact.</div>
+  ${rows(l,60).map(({i,x})=>`<div class="card" style="display:block"><div style="display:flex;justify-content:space-between"><b>${i.name}</b><span>${pct(x.c)}</span></div><div class="m">${fmt(x.b)}p → ${fmt(x.p)}p (${x.p>x.b?"+":""}${fmt(x.p-x.b)}p) · ${x.v} sold in 48h</div><div class="m" style="margin-top:4px">${reason(x.c,x)}</div></div>`).join("")||'<div class="note">Nothing yet. Prices are still loading.</div>'}`;
+}
+function ducatView(){
+  let l=Object.values(items).filter(i=>i.ducats>0&&cache[i.slug]?.p>0&&i.name.toLowerCase().includes(dl.q.toLowerCase())).map(i=>({i,p:cache[i.slug].p,d:i.ducats/cache[i.slug].p}));
+  l.sort((a,b)=>dl.s=="dpp"?b.d-a.d:dl.s=="d"?b.i.ducats-a.i.ducats:b.p-a.p);
+  return `<div class="note">Ducats per platinum from current prices. Higher means cheaper to convert into ducats for Baro.</div>
+  <div class="bar"><input placeholder="Search prime parts" value="${dl.q}" oninput="dl.q=this.value;clearTimeout(window.st);window.st=setTimeout(render,250)">
+  <select onchange="dl.s=this.value;render()"><option value="dpp">Ducats per plat</option><option value="d" ${dl.s=="d"?"selected":""}>Ducats</option><option value="p" ${dl.s=="p"?"selected":""}>Price</option></select></div>
+  ${rows(l).map(o=>`<div class="card"><div><b>${o.i.name}</b><div class="m">${o.i.ducats} ducats</div></div><div class="r">${fmt(o.d)} d/p<div class="m">${fmt(o.p)}p</div></div></div>`).join("")||'<div class="note">Waiting for prices…</div>'}`;
+}
+/* ---------- relics ---------- */
+async function loadRelics(){
+  try{
+    const j=await (await fetch("https://drops.warframestat.us/data/relics.json")).json();
+    relics=j.relics.filter(r=>r.state=="Intact");relErr="";
+    relics.forEach(r=>r.rewards.forEach(x=>{const s=SLUG(x.itemName);if(items[s]||true)prio.add(s)}));
+  }catch(e){relErr="Could not load relic drop tables."}
+  try{
+    const v=await (await fetch("https://api.warframestat.us/items?only=name,vaulted&type=Relic")).json();
+    (Array.isArray(v)?v:[]).forEach(x=>{if(x.vaulted!=null)vault[x.name.replace(/ Relic$/,"").toLowerCase()]=!!x.vaulted});
+  }catch(e){}
+}
+const CH={Intact:[.2533,.11,.02],Exceptional:[.2333,.13,.04],Flawless:[.2,.17,.06],Radiant:[.1667,.20,.10]};
+function relicEV(r,ref){
+  let ev=0,known=0,n=r.rewards.length;
+  const cm={Common:0,Uncommon:0,Rare:0};
+  r.rewards.forEach(x=>{const rar=x.rarity,idx=rar=="Common"?0:rar=="Uncommon"?1:2;
+    const per=CH[ref][idx],ch=per; const px=SLUG(x.itemName)=="forma_blueprint"?0:cache[SLUG(x.itemName)]?.p;
+    if(px!=null){ev+=ch*px;known++}else if(/forma/i.test(x.itemName))known++});
+  return{ev,known,n};
+}
+function relicView(){
+  const vk=r=>vault[(r.tier+" "+r.relicName).toLowerCase()];
+  let l=relics.map(r=>({r,...relicEV(r,rl.ref),v:vk(r)})).filter(o=>(!rl.tier||o.r.tier==rl.tier)&&(!rl.v||(rl.v=="v"?o.v===true:o.v===false))&&(o.r.tier+" "+o.r.relicName).toLowerCase().includes(rl.q.toLowerCase()));
+  l.sort((a,b)=>rl.sort=="roi"?b.ev-a.ev:(a.r.tier+a.r.relicName).localeCompare(b.r.tier+b.r.relicName));
+  const o=(k,arr,all)=>`<select onchange="rl.${k}=this.value;render()"><option value="">${all}</option>${arr.map(([v,n])=>`<option value="${v}" ${rl[k]==v?"selected":""}>${n}</option>`).join("")}</select>`;
+  return `${relErr?`<div class="note">${relErr}</div>`:""}
+  <div class="note">ROI = expected platinum from one run at the chosen refinement: each reward's drop chance × its current market price. Chances use the standard 4-player-solo refinement odds from the official drop tables. Rewards without a price yet count as 0.</div>
+  <div class="bar"><input placeholder="Search relic, e.g. Axi A1" value="${rl.q}" oninput="rl.q=this.value;clearTimeout(window.st);window.st=setTimeout(render,250)">
+  ${o("tier",["Lith","Meso","Neo","Axi"].map(t=>[t,t]),"All tiers")}
+  ${o("v",[["v","Vaulted"],["u","Unvaulted"]],"Vaulted + not")}
+  <select onchange="rl.ref=this.value;render()">${Object.keys(CH).map(k=>`<option ${rl.ref==k?"selected":""}>${k}</option>`).join("")}</select>
+  <select onchange="rl.sort=this.value;render()"><option value="roi">Sort: ROI</option><option value="name" ${rl.sort=="name"?"selected":""}>Sort: Name</option></select></div>
+  ${rows(l,80).map(o=>`<div class="card" style="display:block"><div style="display:flex;justify-content:space-between"><b>${o.r.tier} ${o.r.relicName}</b><span>${fmt(o.ev)}p</span></div>
+  <div class="m">${o.v===true?"Vaulted":o.v===false?"Available":"Vault status unknown"} · ${o.known}/${o.n} prices loaded</div>
+  <div class="m">${o.r.rewards.map(x=>`${x.itemName} (${x.rarity[0]} ${fmt(CH[rl.ref][x.rarity=="Common"?0:x.rarity=="Uncommon"?1:2]*100)}%) ${cache[SLUG(x.itemName)]?.p!=null?fmt(cache[SLUG(x.itemName)].p)+"p":""}`).join("<br>")}</div></div>`).join("")||'<div class="note">No relics to show yet.</div>'}`;
+}
+/* ---------- rivens ---------- */
+async function loadRivens(){
+  try{
+    const j=await (await fetch("https://api.warframe.market/v1/riven/items")).json();
+    j.payload.items.forEach(i=>{rivItems[i.url_name]={slug:i.url_name,name:i.item_name,type:i.riven_type||"other"}});
+    rvErr="";
+  }catch(e){rvErr="Could not load the riven weapon list from warframe.market."}
+  if(tab=="riv")render();
+  rivQueue();
+}
+async function rivQueue(){
+  if(rivRun)return;rivRun=true;
+  const q=Object.keys(rivItems).filter(s=>!rv[s]||Date.now()-rv[s].t>20*60*1000);
+  let n=0;
+  while(q.length){
+    const s=q.shift();
+    try{
+      await gate();
+      const r=await fetch(`https://api.warframe.market/v1/auctions/search?type=riven&weapon_url_name=${s}&sort_by=price_asc&buyout_policy=with`);
+      if(r.status==429){q.unshift(s);await new Promise(r=>setTimeout(r,3000));continue}
+      if(r.ok){
+        const a=(await r.json()).payload.auctions.filter(x=>!x.closed&&x.visible!==false&&x.buyout_price>0);
+        const p=a.map(x=>x.buyout_price).sort((x,y)=>x-y), c=p.slice(0,5);
+        rv[s]={t:Date.now(),n:p.length,lo:p.length?p[0]:null,med:c.length?c[(c.length-1)>>1]:null};
+      }else rv[s]={t:Date.now()};
+    }catch(e){}
+    if(++n%15==0){LS("rv",rv);if(tab=="riv")render()}
+  }
+  LS("rv",rv);rivRun=false;if(tab=="riv")render();
+}
+function rivenView(){
+  const types=[...new Set(Object.values(rivItems).map(i=>i.type))].sort();
+  const l=Object.values(rivItems).filter(i=>(!vl.t||i.type==vl.t)&&i.name.toLowerCase().includes(vl.q.toLowerCase()));
+  const lo=i=>rv[i.slug]?.lo;
+  l.sort((a,b)=>vl.s=="name"?a.name.localeCompare(b.name):vl.s=="type"?a.type.localeCompare(b.type)||a.name.localeCompare(b.name):vl.s=="asc"?(lo(a)??1e9)-(lo(b)??1e9):(lo(b)??-1)-(lo(a)??-1));
+  return `${rvErr?`<div class="note">${rvErr}</div>`:""}
+  <div class="note">Cheapest buy-it-now Riven listed for each weapon on warframe.market. "Typical" is the middle of the 5 cheapest. Rivens vary a lot by stats, so treat this as the entry price for that weapon, not what a god-roll costs.</div>
+  <div class="bar"><input placeholder="Search weapon" value="${vl.q}" oninput="vl.q=this.value;clearTimeout(window.st);window.st=setTimeout(render,250)">
+  <select onchange="vl.t=this.value;render()"><option value="">All types</option>${types.map(t=>`<option ${vl.t==t?"selected":""}>${t}</option>`).join("")}</select>
+  <select onchange="vl.s=this.value;render()">${[["name","Name"],["type","Type"],["asc","Price: low to high"],["desc","Price: high to low"]].map(([v,n])=>`<option value="${v}" ${vl.s==v?"selected":""}>Sort: ${n}</option>`).join("")}</select></div>
+  ${rows(l).map(i=>{const c=rv[i.slug]||{};return `<div class="card"><div><b>${i.name}</b><div class="m">${i.type} · ${c.n!=null?c.n+" listed":"loading…"} · <a href="https://warframe.market/auctions/search?type=riven&weapon_url_name=${i.slug}&sort_by=price_asc" target="_blank" rel="noopener">view</a></div></div><div class="r">${c.lo!=null?c.lo+"p":"–"}<div class="m">${c.med!=null?"typical "+c.med+"p":""}</div></div></div>`}).join("")}
+  ${l.length>200?`<div class="note">Showing 200 of ${l.length}. Search to narrow down.</div>`:""}`;
+}
+/* ---------- oracle (just for fun) ---------- */
+const UP=["The Lotus saw this in a dream.","Tenno are quietly hoarding it.","Someone just made a build video.","Baro is rumored to be scared of it.","Even the Grineer are buying."];
+const DN=["Everyone is farming it at once.","A Kubrow sat on the market.","Players found a cheaper way to get it.","Sellers panicked in the Orbiter.","Void energy is draining out of it."];
+function oracleView(){
+  const day=new Date().toDateString();
+  const h=s=>{let x=0;for(const ch of s+day)x=(x*31+ch.charCodeAt(0))>>>0;return x};
+  const L=Object.values(items).map(i=>({i,x:cache[i.slug]})).filter(o=>o.x&&o.x.c!=null&&o.x.p>=3&&o.x.v>=3).map(o=>{
+    const vr=o.x.bv?o.x.v/o.x.bv:1;
+    let pred=vr>=1.2?o.x.c*.6:-o.x.c*.5; /* strong volume = trend continues, weak volume = snaps back */
+    pred+=((h(o.i.name)%9)-4)/100; pred=Math.max(-.4,Math.min(.4,pred));
+    return{...o,pred,conf:Math.min(95,Math.round(35+Math.abs(pred)*120+(o.x.v>20?10:0)))};
+  });
+  const card=o=>{const msg=(o.pred>0?UP:DN)[h(o.i.name+"m")%5];
+    return `<div class="card" style="display:block"><div style="display:flex;justify-content:space-between"><b>${o.i.name}</b><span class="${o.pred>0?"up":"dn"}">${o.pred>0?"▲ +":"▼ "}${Math.round(o.pred*100)}%</span></div><div class="m">Now ${fmt(o.x.p)}p · Lotus confidence ${o.conf}%</div><div class="m" style="margin-top:3px">${msg}</div></div>`};
+  const up=L.filter(o=>o.pred>0).sort((a,b)=>b.pred-a.pred).slice(0,8),dn=L.filter(o=>o.pred<0).sort((a,b)=>a.pred-b.pred).slice(0,8);
+  return `<div class="note">For fun only, not trading advice. The guess combines each item's 48h price against its 90-day average and its trading volume: busy trading means the trend keeps going, quiet trading means it snaps back. The jokes are made up. Picks reshuffle a little each day.</div>
+  <h1 style="font-size:17px;margin:6px 0">Going up</h1>${up.map(card).join("")||'<div class="note">Waiting for prices…</div>'}
+  <h1 style="font-size:17px;margin:12px 0 6px">Going down</h1>${dn.map(card).join("")||'<div class="note">Waiting for prices…</div>'}`;
+}
+/* ---------- render ---------- */
+function render(){
+  const y=scrollY;
+  $("#view").innerHTML=tab=="fiss"?fissView():tab=="mkt"?marketView():tab=="mov"?moversView():tab=="rel"?relicView():tab=="riv"?rivenView():tab=="ora"?oracleView():ducatView();
+  if(document.activeElement===document.body)scrollTo(0,y);
+}
+nav();render();
+loadFiss();setInterval(loadFiss,60000);
+loadRelics().then(loadItems);
+loadRivens();
+setInterval(()=>{if(!running)startQueue();rivQueue()},20*60*1000);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden){loadFiss();if(!running)startQueue();rivQueue()}});
+</script></body></html>
