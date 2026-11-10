@@ -62,7 +62,7 @@ function go(k){tab=k;location.hash=k;nav();render()}
 async function loadFiss(){
   try{
     const r=await fetch("https://api.warframestat.us/pc/fissures?language=en");
-    F=(await r.json()).filter(f=>!f.expired&&!f.isStorm); fErr="";
+    F=(await r.json()).filter(f=>!f.expired&&!f.isStorm&&new Date(f.expiry)>Date.now()); fErr="";
     checkRules();
   }catch(e){fErr="Could not reach the fissure API. Check your connection."}
   if(tab=="fiss")render();
@@ -88,7 +88,7 @@ async function addRule(){
 function delRule(i){rules.splice(i,1);LS("rules",rules);render()}
 function fissView(){
   const types=[...new Set(F.map(f=>f.missionType))].sort(), tiers=["Lith","Meso","Neo","Axi","Requiem","Omnia"].filter(t=>F.some(f=>f.tier==t));
-  const list=F.filter(f=>match(f,fl)).sort((a,b)=>new Date(a.expiry)-new Date(b.expiry));
+  const list=F.filter(f=>match(f,fl)&&new Date(f.expiry)>Date.now()).sort((a,b)=>new Date(a.expiry)-new Date(b.expiry));
   const sel=(k,arr,all)=>`<select onchange="fl.${k}=this.value;render()"><option value="">${all}</option>${arr.map(([v,n])=>`<option value="${v}" ${fl[k]==v?"selected":""}>${n}</option>`).join("")}</select>`;
   return `${fErr?`<div class="note">${fErr}</div>`:""}
   <div class="bar">${sel("m",types.map(t=>[t,t]),"All missions")}${sel("s",[["normal","Normal"],["sp","Steel Path"]],"Normal + Steel Path")}${sel("tier",tiers.map(t=>[t,t]),"All relic tiers")}</div>
@@ -98,16 +98,18 @@ function fissView(){
   ${list.map(f=>`<div class="card"><div><b>${f.missionType}</b> <span class="tag">${f.tier}</span>${f.isHardMode?'<span class="tag sp">Steel Path</span>':""}<div class="m">${f.node}${f.enemy?" · "+f.enemy:""}</div></div><div class="r m" data-exp="${f.expiry}"></div></div>`).join("")||'<div class="note">No fissures match.</div>'}`;
 }
 setInterval(()=>document.querySelectorAll("[data-exp]").forEach(e=>{
-  let s=Math.max(0,(new Date(e.dataset.exp)-Date.now())/1000|0);e.textContent=`${s/3600|0}h ${(s%3600)/60|0}m ${s%60}s`}),1000);
+  let s=Math.max(0,(new Date(e.dataset.exp)-Date.now())/1000|0);if(s==0&&!e.dataset.done){e.dataset.done=1;setTimeout(()=>{if(tab=="fiss")render()},50)}e.textContent=`${s/3600|0}h ${(s%3600)/60|0}m ${s%60}s`}),1000);
 
 /* ---------- market data ---------- */
 const tp=tags=>{tags=tags||[];return tags.includes("arcane_enhancement")?"Arcane":tags.includes("mod")?"Mod":tags.includes("warframe")?"Warframe":tags.includes("weapon")?"Weapon":tags.includes("relic")?"Relic":tags.includes("sentinel")||tags.includes("pet")?"Companion":"Other"};
 async function loadItems(){
   try{
-    const j=await (await fetch("https://api.warframe.market/v2/items",{headers:{Language:"en"}})).json();
+    const rs=await fetch("https://api.warframe.market/v2/items");
+    if(!rs.ok)throw new Error("HTTP "+rs.status);
+    const j=await rs.json();
     (j.data||[]).forEach(i=>{items[i.slug]={slug:i.slug,name:i.i18n?.en?.name||i.slug,type:tp(i.tags),ducats:i.ducats||0}});
     mErr="";
-  }catch(e){mErr="Could not load the item list from warframe.market."}
+  }catch(e){mErr="Could not load the item list from warframe.market ("+e.message+")."}
   startQueue();
 }
 const stale=s=>{const c=cache[s];return !c||Date.now()-c.t>20*60*1000};
@@ -216,10 +218,12 @@ function relicView(){
 /* ---------- rivens ---------- */
 async function loadRivens(){
   try{
-    const j=await (await fetch("https://api.warframe.market/v1/riven/items")).json();
+    const rs=await fetch("https://api.warframe.market/v1/riven/items");
+    if(!rs.ok)throw new Error("HTTP "+rs.status);
+    const j=await rs.json();
     j.payload.items.forEach(i=>{rivItems[i.url_name]={slug:i.url_name,name:i.item_name,type:i.riven_type||"other"}});
     rvErr="";
-  }catch(e){rvErr="Could not load the riven weapon list from warframe.market."}
+  }catch(e){rvErr="Could not load the riven weapon list from warframe.market ("+e.message+")."}
   if(tab=="riv")render();
   rivQueue();
 }
