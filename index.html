@@ -37,7 +37,7 @@ button.b{background:var(--p2);color:var(--ice2)}
 a{color:var(--ice)}
 </style></head><body>
 <main>
-<h1>Icebind Companion <small style="font:12px sans-serif;color:var(--mu)">v7</small></h1>
+<h1>Icebind Companion <small style="font:12px sans-serif;color:var(--mu)">v8</small></h1>
 <div class="sub" id="status">Starting…</div>
 <div class="prog"><i id="pb"></i></div>
 <div id="warn"></div>
@@ -127,7 +127,7 @@ async function loadItems(){
     if(saved&&ver&&saved.v==ver)list=saved.d; /* item list unchanged: skip the big download */
     if(!list){
       const rs=await fetch(WFM+"/v2/items");
-      if(!rs.ok)throw new Error("HTTP "+rs.status);
+      if(!rs.ok)throw new Error("HTTP "+rs.status+" "+(await rs.text().catch(()=>"")).replace(/<[^>]*>/g," ").trim().slice(0,90));
       list=((await rs.json()).data||[]).filter(i=>i.tradable!==false).map(i=>({s:i.slug,n:i.i18n?.en?.name||i.slug,t:tp(i.tags),d:i.ducats||0,v:i.vaulted==null?null:!!i.vaulted,r:(i.tags||[]).includes("relic"),id:i.id,sr:!!i.setRoot,sp:i.setParts||null,q:i.quantityInSet||1,m:i.maxRank||0}));
       if(ver)LS("il2",{v:ver,d:list});
     }
@@ -156,7 +156,7 @@ async function startQueue(){
       const r=await topOrders(s);
       if(r.status==429){q.unshift(s);await new Promise(r=>setTimeout(r,3000));continue}
       if(r.ok){cache[s]=calc(cache[s],await r.json());fails=0}
-      else{fails++;last="HTTP "+r.status;cache[s]={...(cache[s]||{}),t:Date.now()}}
+      else{fails++;last="HTTP "+r.status+" "+(await r.text().catch(()=>"")).replace(/<[^>]*>/g," ").trim().slice(0,90);cache[s]={...(cache[s]||{}),t:Date.now()}}
     }catch(e){fails++;last=e.message}
     n++;
     if(n%25==0){LS("px",cache);$("#status").textContent=`Updating prices ${n}/${total}`;$("#pb").style.width=(n/total*100)+"%";if(["mkt","mov","rel","duc","ora","set"].includes(tab))render();q=order()}
