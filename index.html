@@ -37,7 +37,7 @@ button.b{background:var(--p2);color:var(--ice2)}
 a{color:var(--ice)}
 </style></head><body>
 <main>
-<h1>Icebind Companion <small style="font:12px sans-serif;color:var(--mu)">v6</small></h1>
+<h1>Icebind Companion <small style="font:12px sans-serif;color:var(--mu)">v7</small></h1>
 <div class="sub" id="status">Starting…</div>
 <div class="prog"><i id="pb"></i></div>
 <div id="warn"></div>
@@ -47,6 +47,9 @@ a{color:var(--ice)}
 <script>
 const $=s=>document.querySelector(s);
 const LS=(k,v)=>{try{if(v===undefined)return JSON.parse(localStorage.getItem(k));localStorage.setItem(k,JSON.stringify(v))}catch(e){return null}};
+/* API address: direct by default; can be switched to your own proxy from the warning box */
+const WFM=(LS("wfm")||"https://api.warframe.market").replace(/\/$/,"");
+function saveProxy(){const v=($("#pxu").value||"").trim();if(v)localStorage.setItem("wfm",JSON.stringify(v));else localStorage.removeItem("wfm");location.reload()}
 const TABS=[["fiss","Fissures"],["mkt","Market"],["mov","Movers"],["rel","Relics"],["set","Sets"],["duc","Ducats"],["riv","Rivens"],["ora","Oracle"]];
 let tab=location.hash.slice(1)||"fiss";
 let F=[],fErr="",fl={t:"",m:"",s:"",tier:""},rules=LS("rules")||[],seen=new Set(),first=true;
@@ -119,11 +122,11 @@ const tp=tags=>{tags=tags||[];return tags.includes("arcane_enhancement")?"Arcane
 async function loadItems(){
   try{
     let list=null,ver=null;
-    try{const v=await (await fetch("https://api.warframe.market/v2/versions")).json();ver=v.data?.collections?.items||null}catch(e){}
+    try{const v=await (await fetch(WFM+"/v2/versions")).json();ver=v.data?.collections?.items||null}catch(e){}
     const saved=LS("il2");
     if(saved&&ver&&saved.v==ver)list=saved.d; /* item list unchanged: skip the big download */
     if(!list){
-      const rs=await fetch("https://api.warframe.market/v2/items");
+      const rs=await fetch(WFM+"/v2/items");
       if(!rs.ok)throw new Error("HTTP "+rs.status);
       list=((await rs.json()).data||[]).filter(i=>i.tradable!==false).map(i=>({s:i.slug,n:i.i18n?.en?.name||i.slug,t:tp(i.tags),d:i.ducats||0,v:i.vaulted==null?null:!!i.vaulted,r:(i.tags||[]).includes("relic"),id:i.id,sr:!!i.setRoot,sp:i.setParts||null,q:i.quantityInSet||1,m:i.maxRank||0}));
       if(ver)LS("il2",{v:ver,d:list});
@@ -138,7 +141,7 @@ async function loadItems(){
 const stale=s=>{const c=cache[s];return !c||Date.now()-c.t>20*60*1000};
 let prio=new Set(),running=false;
 async function topOrders(s){
-  const mr=items[s]?.maxRank,u=`https://api.warframe.market/v2/orders/item/${s}/top${mr>0?"?rank="+mr:""}`;
+  const mr=items[s]?.maxRank,u=`${WFM}/v2/orders/item/${s}/top${mr>0?"?rank="+mr:""}`;
   try{return await fetch(u,{headers:{Platform:"pc"}})}catch(e){return await fetch(u)}
 }
 async function startQueue(){
@@ -247,7 +250,7 @@ function relicView(){
 /* ---------- rivens ---------- */
 async function loadRivens(){
   try{
-    const rs=await fetch("https://api.warframe.market/v2/riven/weapons");
+    const rs=await fetch(WFM+"/v2/riven/weapons");
     if(!rs.ok)throw new Error("HTTP "+rs.status);
     const j=await rs.json();
     (j.data||[]).forEach(i=>{rivItems[i.slug]={slug:i.slug,name:i.i18n?.en?.name||i.slug,type:i.rivenType||"other",disp:i.disposition}});
@@ -265,7 +268,7 @@ async function rivQueue(){
     const s=q.shift();
     try{
       await gate();
-      const r=await fetch(`https://api.warframe.market/v1/auctions/search?type=riven&weapon_url_name=${s}&sort_by=price_asc&buyout_policy=with`);
+      const r=await fetch(`${WFM}/v1/auctions/search?type=riven&weapon_url_name=${s}&sort_by=price_asc&buyout_policy=with`);
       if(r.status==429){q.unshift(s);await new Promise(r=>setTimeout(r,3000));continue}
       if(r.ok){
         const a=(await r.json()).payload.auctions.filter(x=>!x.closed&&x.visible!==false&&x.buyout_price>0);
@@ -322,7 +325,7 @@ async function loadSetsFallback(){
     if(!setCache[r.slug]){
       try{
         await gate();
-        const rs=await fetch(`https://api.warframe.market/v2/item/${r.slug}/set`);
+        const rs=await fetch(`${WFM}/v2/item/${r.slug}/set`);
         if(!rs.ok)continue;
         setCache[r.slug]=((await rs.json()).data?.items||[]).filter(x=>x.slug!=r.slug).map(x=>({slug:x.slug,q:x.quantityInSet||1}));
       }catch(e){}
@@ -351,7 +354,7 @@ function setsView(){
 }
 /* ---------- render ---------- */
 function render(){
-  const y=scrollY;$("#warn").innerHTML=mErr&&tab!="mkt"?`<div class="note">${mErr}</div>`:"";
+  const y=scrollY;$("#warn").innerHTML=mErr?(tab!="mkt"?`<div class="note">${mErr}</div>`:"")+`<div class="note">If this says "Failed to fetch", your browser is blocking warframe.market. Paste the address of your own proxy here (see worker.js), or leave empty to go direct.<div class="bar" style="margin:8px 0 0"><input id="pxu" placeholder="https://yourname.workers.dev" value="${LS("wfm")||""}"><button class="b" onclick="saveProxy()">Save</button></div></div>`:"";
   $("#view").innerHTML=tab=="fiss"?fissView():tab=="mkt"?marketView():tab=="mov"?moversView():tab=="rel"?relicView():tab=="riv"?rivenView():tab=="set"?setsView():tab=="ora"?oracleView():ducatView();
   if(document.activeElement===document.body)scrollTo(0,y);
   tick();
